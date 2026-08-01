@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any
 
 from semantic_analyzer import SemanticAnalyzer, SemanticError
-from visualizer import build_ast_tree, build_automaton_steps, format_ast_tree, format_automaton_steps
+from visualizer import build_ast_graph, build_automaton_graph
 
 @dataclass
 class Token:
@@ -388,30 +388,25 @@ class GUI:
 		visualTabs = ttk.Notebook(visualFrame)
 		visualTabs.pack(fill=tk.BOTH, expand=True)
 
-		self.astView = scrolledtext.ScrolledText(
-			visualTabs,
-			font=("Consolas", 10),
-			bg="#111418",
-			fg=fgText,
-			insertbackground="white",
-			wrap=tk.WORD,
-			state='disabled',
-			bd=0,
-			highlightthickness=0
-		)
-		self.automatonView = scrolledtext.ScrolledText(
-			visualTabs,
-			font=("Consolas", 10),
-			bg="#111418",
-			fg=fgText,
-			insertbackground="white",
-			wrap=tk.WORD,
-			state='disabled',
-			bd=0,
-			highlightthickness=0
-		)
-		visualTabs.add(self.astView, text="Árbol sintáctico")
-		visualTabs.add(self.automatonView, text="Autómata léxico")
+		self.astFrame = ttk.Frame(visualTabs)
+		self.astCanvas = tk.Canvas(self.astFrame, bg="#111418", highlightthickness=0)
+		self.astCanvas.pack(fill=tk.BOTH, expand=True)
+		self.astCanvas.bind("<ButtonPress-1>", self.startDrag)
+		self.astCanvas.bind("<B1-Motion>", self.onDrag)
+		self.astCanvas.bind("<MouseWheel>", self.onWheel)
+		self.astCanvas.bind("<Button-4>", self.onWheel)
+		self.astCanvas.bind("<Button-5>", self.onWheel)
+		visualTabs.add(self.astFrame, text="Árbol sintáctico")
+
+		self.automatonFrame = ttk.Frame(visualTabs)
+		self.automatonCanvas = tk.Canvas(self.automatonFrame, bg="#111418", highlightthickness=0)
+		self.automatonCanvas.pack(fill=tk.BOTH, expand=True)
+		self.automatonCanvas.bind("<ButtonPress-1>", self.startDrag)
+		self.automatonCanvas.bind("<B1-Motion>", self.onDrag)
+		self.automatonCanvas.bind("<MouseWheel>", self.onWheel)
+		self.automatonCanvas.bind("<Button-4>", self.onWheel)
+		self.automatonCanvas.bind("<Button-5>", self.onWheel)
+		visualTabs.add(self.automatonFrame, text="Autómata léxico")
 
 		btnFrame = ttk.Frame(leftFrame)
 		btnFrame.pack(fill=tk.X, pady=(8, 0))
@@ -424,6 +419,11 @@ class GUI:
 		self.output.tag_config("error", foreground="#f44747")
 		self.output.tag_config("info", foreground=accent)
 
+		self.drag_data = {"canvas": None, "x": 0, "y": 0}
+		self.view_scale = 1.0
+		self.graph_offsets = {}
+		self.graph_cache = {}
+		self.zoom_levels = {}
 		self.updateVariablesView()
 	
 	def centerWindow(self, root, w, h):
@@ -486,20 +486,120 @@ class GUI:
 			self.printOut(f"Error: {e}", "error")
 		self.entry.delete(0, tk.END)
 
+	def startDrag(self, event):
+		self.drag_data["canvas"] = event.widget
+		self.drag_data["x"] = event.x
+		self.drag_data["y"] = event.y
+
+	def onDrag(self, event):
+		canvas = event.widget
+		if not self.drag_data["canvas"]:
+			return
+		if self.drag_data["canvas"] is not canvas:
+			self.drag_data["canvas"] = canvas
+			dx = 0
+			dy = 0
+		else:
+			dx = event.x - self.drag_data["x"]
+			dy = event.y - self.drag_data["y"]
+		self.drag_data["x"] = event.x
+		self.drag_data["y"] = event.y
+		old_offset = self.graph_offsets.get(canvas, (0, 0))
+		self.graph_offsets[canvas] = (old_offset[0] + dx, old_offset[1] + dy)
+		if canvas in self.graph_cache:
+			self.drawGraph(canvas, self.graph_cache[canvas])
+
+	def onWheel(self, event):
+		canvas = event.widget
+		current_zoom = self.zoom_levels.get(canvas, 1.0)
+		if event.num == 5 or event.delta < 0:
+			new_zoom = max(0.6, current_zoom - 0.1)
+		else:
+			new_zoom = min(2.2, current_zoom + 0.1)
+		self.zoom_levels[canvas] = new_zoom
+		if canvas in self.graph_cache:
+			self.drawGraph(canvas, self.graph_cache[canvas])
+
+	def drawGraph(self, canvas, graph_data):
+		canvas.delete("all")
+		nodes = graph_data.get("nodes", [])
+		edges = graph_data.get("edges", [])
+		if not nodes:
+			return
+
+		children_map = {node["id"]: [] for node in nodes}
+		incoming = {node["id"]: 0 for node in nodes}
+		for edge in edges:
+			children_map[edge["from"]].append(edge["to"])
+			incoming[edge["to"]] += 1
+
+		root = next((node["id"] for node in nodes if incoming[node["id"]] == 0), nodes[0]["id"])
+		depths = {root: 0}
+		queue = [root]
+		while queue:
+			current = queue.pop()
+			for child in children_map[current]:
+				if child not in depths:
+					depths[child] = depths[current] + 1
+					queue.append(child)
+
+		for node in nodes:
+			if node["id"] not in depths:
+				depths[node["id"]] = 0
+
+		by_depth = {}
+		for node in nodes:
+			by_depth.setdefault(depths[node["id"]], []).append(node)
+
+		positions = {}
+		max_depth = max(depths.values()) if depths else 0
+		zoom = self.zoom_levels.get(canvas, 1.0)
+		offset_x, offset_y = self.graph_offsets.get(canvas, (0, 0))
+		for depth in sorted(by_depth):
+			items = by_depth[depth]
+			for index, node in enumerate(items):
+				x = 80 + depth * 180 * zoom + offset_x
+				y = 80 + index * 110 * zoom + offset_y
+				positions[node["id"]] = (x, y)
+
+		canvas_width = max(320, int(140 + (max_depth + 1) * 180 * zoom))
+		canvas_height = max(280, int(120 + len(nodes) * 60 * zoom))
+		canvas.config(width=canvas_width, height=canvas_height)
+
+		for edge in edges:
+			from_pos = positions[edge["from"]]
+			to_pos = positions[edge["to"]]
+			line_width = max(1, int(2 * zoom))
+			canvas.create_line(
+				from_pos[0] + 40 * zoom, from_pos[1],
+				to_pos[0] - 40 * zoom, to_pos[1],
+				fill="#4fc3f7", width=line_width, arrow=tk.LAST, smooth=True
+			)
+			canvas.create_text(
+				(from_pos[0] + to_pos[0]) // 2,
+				(from_pos[1] + to_pos[1]) // 2 - 12 * zoom,
+				text=edge.get("label", ""),
+				fill="#9cdcfe",
+				font=("Segoe UI", int(9 * zoom))
+			)
+
+		for node in nodes:
+			x, y = positions[node["id"]]
+			label = node["label"]
+			if len(label) > 24:
+				label = label[:21] + "..."
+			node_w = int(56 * zoom)
+			node_h = int(24 * zoom)
+			canvas.create_rectangle(x - node_w // 2, y - node_h // 2, x + node_w // 2, y + node_h // 2, fill="#263b4a", outline="#4fc3f7", width=max(1, int(2 * zoom)))
+			canvas.create_text(x, y, text=label, fill="white", font=("Segoe UI", int(10 * zoom), "bold"))
+
 	def updateVisualization(self, ast, tokens):
-		ast_tree = build_ast_tree(ast)
-		ast_text = format_ast_tree(ast_tree)
-		automaton_text = format_automaton_steps(build_automaton_steps(tokens))
-
-		self.astView.configure(state='normal')
-		self.astView.delete(1.0, tk.END)
-		self.astView.insert(tk.END, ast_text)
-		self.astView.configure(state='disabled')
-
-		self.automatonView.configure(state='normal')
-		self.automatonView.delete(1.0, tk.END)
-		self.automatonView.insert(tk.END, automaton_text)
-		self.automatonView.configure(state='disabled')
+		ast_graph = build_ast_graph(ast)
+		automaton_graph = build_automaton_graph(tokens)
+		self.graph_cache[self.astCanvas] = ast_graph
+		self.graph_cache[self.automatonCanvas] = automaton_graph
+		self.drawGraph(self.astCanvas, ast_graph)
+		self.drawGraph(self.automatonCanvas, automaton_graph)
 
 	def historyUp(self, event):
 		if self.history:
