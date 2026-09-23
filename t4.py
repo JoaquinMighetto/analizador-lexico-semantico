@@ -448,7 +448,17 @@ class GUI:
 		self.output.configure(state='normal')
 		self.output.delete(1.0, tk.END)
 		self.output.configure(state='disabled')
-
+		if hasattr(self, 'astCanvas'):
+			self.astCanvas.delete("all")
+		if hasattr(self, 'automatonCanvas'):
+			self.automatonCanvas.delete("all")
+		self.graph_cache.pop(getattr(self, 'astCanvas', None), None)
+		self.graph_cache.pop(getattr(self, 'automatonCanvas', None), None)
+		self.graph_offsets.pop(getattr(self, 'astCanvas', None), None)
+		self.graph_offsets.pop(getattr(self, 'automatonCanvas', None), None)
+		self.zoom_levels.pop(getattr(self, 'astCanvas', None), None)
+		self.zoom_levels.pop(getattr(self, 'automatonCanvas', None), None)
+		
 	def updateVariablesView(self):
 		self.varsText.configure(state='normal')
 		self.varsText.delete(1.0, tk.END)
