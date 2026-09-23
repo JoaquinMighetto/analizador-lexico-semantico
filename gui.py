@@ -1,296 +1,15 @@
-import re
 import math
 import tkinter as tk
 from tkinter import ttk, scrolledtext
-from dataclasses import dataclass
-from typing import List, Dict, Any
-
-from semantic_analyzer import SemanticAnalyzer, SemanticError
-from visualizer import build_ast_graph, build_automaton_graph
-
-@dataclass
-class Token:
-    type: str
-    value: Any
-    line: int
-    column: int
-
-TOKENS_PATTERNS = [
-    ('NUMBER', r'\d+(\.\d*)?|\.\d+'),
-    ('POW', r'\*\*|\^'),
-    ('PLUS', r'\+'),
-    ('MINUS', r'-'),
-    ('MUL', r'\*'),
-    ('DIV', r'/'),
-    ('MOD', r'%'),
-    ('ASSIGN', r'='),
-    ('COMMA', r','),
-    ('LPAREN', r'\('),
-    ('RPAREN', r'\)'),
-    ('ID', r'[a-zA-Z_][a-zA-Z0-9_]*'),
-    ('SKIP', r'[ \t]+'),
-    ('NEWLINE', r'\n'),
-    ('COMMENT', r'#.*'),
-    ('MISMATCH', r'.'),
-]
-
-TOKEN_REGEX = [(t, re.compile(p)) for t, p in TOKENS_PATTERNS]
-
-class Lexer:
-
-    def __init__(self, text: str):
-        self.text = text
-        self.pos = 0
-        self.line = 1
-        self.column = 1
-
-    def tokenize(self) -> List[Token]:
-        tokens = []
-        while self.pos < len(self.text):
-            match = None
-            for tokenType, regex in TOKEN_REGEX:
-                match = regex.match(self.text, self.pos)
-                if not match:
-                    continue
-                value = match.group(0)
-                if tokenType == 'NEWLINE':
-                    self.pos += len(value)
-                    self.line += 1
-                    self.column = 1
-                    break
-                if tokenType in ('SKIP', 'COMMENT'):
-                    self.pos += len(value)
-                    self.column += len(value)
-                    break
-                if tokenType == 'MISMATCH':
-                    raise SyntaxError(f"Carácter inválido '{value}' en línea {self.line}")
-                tokens.append(Token(tokenType, value, self.line, self.column))
-                self.pos += len(value)
-                self.column += len(value)
-                break
-            if not match:
-                raise SyntaxError("Error léxico desconocido")
-        return tokens
-
-class ASTNode:
-    pass
-
-@dataclass
-class Number(ASTNode):
-    value: float
-
-@dataclass
-class Variable(ASTNode):
-    name: str
-
-@dataclass
-class BinOp(ASTNode):
-    left: ASTNode
-    op: str
-    right: ASTNode
-
-@dataclass
-class UnaryOp(ASTNode):
-    op: str
-    expr: ASTNode
-
-@dataclass
-class Assign(ASTNode):
-    name: str
-    value: ASTNode
-
-@dataclass
-class FunctionCall(ASTNode):
-    name: str
-    args: List[ASTNode]
-
-class Parser:
-
-    def __init__(self, tokens: List[Token]):
-        self.tokens = tokens
-        self.pos = 0
-        self.current = tokens[0] if tokens else None
-
-    def advance(self):
-        self.pos += 1
-        self.current = self.tokens[self.pos] if self.pos < len(self.tokens) else None
-
-    def peekType(self):
-        if self.pos + 1 < len(self.tokens):
-            return self.tokens[self.pos + 1].type
-        return None
-
-    def eat(self, tokenType):
-        if not self.current or self.current.type != tokenType:
-            raise SyntaxError(f"Se esperaba {tokenType}")
-        self.advance()
-
-    def parse(self):
-        if not self.current:
-            raise SyntaxError("Entrada vacía")
-        if self.current.type == 'ID' and self.peekType() == 'ASSIGN':
-            return self.assignment()
-        node = self.expr()
-        if self.current:
-            raise SyntaxError("Símbolos extra al final")
-        return node
-
-    def assignment(self):
-        name = self.current.value
-        self.advance()
-        self.eat('ASSIGN')
-        value = self.expr()
-        return Assign(name, value)
-
-    def expr(self):
-        node = self.term()
-        while self.current and self.current.type in ('PLUS', 'MINUS'):
-            op = '+' if self.current.type == 'PLUS' else '-'
-            self.advance()
-            node = BinOp(node, op, self.term())
-        return node
-
-    def term(self):
-        node = self.power()
-        while self.current and self.current.type in ('MUL', 'DIV', 'MOD'):
-            if self.current.type == 'MUL':
-                op = '*'
-            elif self.current.type == 'DIV':
-                op = '/'
-            else:
-                op = '%'
-            self.advance()
-            node = BinOp(node, op, self.power())
-        return node
-
-    def power(self):
-        node = self.unary()
-        if self.current and self.current.type == 'POW':
-            self.advance()
-            node = BinOp(node, '^', self.power())
-        return node
-
-    def unary(self):
-        if self.current and self.current.type == 'MINUS':
-            self.advance()
-            return UnaryOp('-', self.unary())
-        if self.current and self.current.type == 'PLUS':
-            self.advance()
-            return self.unary()
-        return self.atom()
-
-    def atom(self):
-        token = self.current
-        if not token:
-            raise SyntaxError("Expresión incompleta")
-        if token.type == 'NUMBER':
-            self.advance()
-            return Number(float(token.value))
-        if token.type == 'ID':
-            name = token.value
-            self.advance()
-            if self.current and self.current.type == 'LPAREN':
-                return self.functionCall(name)
-            return Variable(name)
-        if token.type == 'LPAREN':
-            self.advance()
-            node = self.expr()
-            self.eat('RPAREN')
-            return node
-        raise SyntaxError(f"Token inválido {token.type}")
-
-    def functionCall(self, name):
-        self.eat('LPAREN')
-        args = []
-        if self.current and self.current.type != 'RPAREN':
-            args.append(self.expr())
-            while self.current and self.current.type == 'COMMA':
-                self.advance()
-                args.append(self.expr())
-        self.eat('RPAREN')
-        return FunctionCall(name, args)
-
-class Interpreter:
-
-    def __init__(self):
-        self.symbols: Dict[str, float] = {
-            'pi': math.pi,
-            'e': math.e
-        }
-        self.functions = {
-            'sqrt': math.sqrt,
-            'sin': math.sin,
-            'cos': math.cos,
-            'tan': math.tan,
-            'log': math.log10,
-            'ln': math.log,
-            'exp': math.exp,
-            'abs': abs,
-            'floor': math.floor,
-            'ceil': math.ceil,
-            'round': round,
-            'pow': pow,
-            'max': max,
-            'min': min
-        }
-
-    def visit(self, node):
-        return getattr(self, f'visit{type(node).__name__}')(node)
-
-    def visitNumber(self, node):
-        return node.value
-
-    def visitVariable(self, node):
-        if node.name not in self.symbols:
-            raise NameError(f"Variable no definida: {node.name}")
-        return self.symbols[node.name]
-
-    def visitAssign(self, node):
-        value = self.visit(node.value)
-        self.symbols[node.name] = value
-        return value
-
-    def visitUnaryOp(self, node):
-        val = self.visit(node.expr)
-        return -val if node.op == '-' else val
-
-    def visitBinOp(self, node):
-        l = self.visit(node.left)
-        r = self.visit(node.right)
-        if node.op == '+':
-            return l + r
-        if node.op == '-':
-            return l - r
-        if node.op == '*':
-            return l * r
-        if node.op == '/':
-            if r == 0:
-                raise ZeroDivisionError("División por cero")
-            return l / r
-        if node.op == '%':
-            if r == 0:
-                raise ZeroDivisionError("Módulo por cero")
-            return l % r
-        if node.op == '^':
-            return l ** r
-
-    def visitFunctionCall(self, node):
-        fname = node.name.lower()
-        if fname not in self.functions:
-            raise NameError(f"Función desconocida: {node.name}")
-        args = [self.visit(arg) for arg in node.args]
-        try:
-            return self.functions[fname](*args)
-        except TypeError:
-            raise TypeError(f"Número incorrecto de argumentos en {fname}")
-        except ValueError:
-            raise ValueError(f"Error matemático en {fname}({args})")
+from analizador_lexico import Lexer
+from analizador_sintactico import Parser
+from interprete import Interpreter
+from analizador_semantico import SemanticAnalyzer, SemanticError
+from visualizador import build_ast_graph, build_automaton_graph
 
 class GUI:
 	def __init__(self, root):
 		root.title("Compilador")
-		root.geometry("800x650")
-		root.minsize(650, 500)
 		bgMain = "#1e1e1e"
 		bgPanel = "#252526"
 		bgEntry = "#2d2d2d"
@@ -302,7 +21,7 @@ class GUI:
 		style.configure("TFrame", background=bgMain)
 		style.configure("Card.TFrame", background=bgPanel)
 		style.configure("TLabel", background=bgMain, foreground=fgText, font=("Segoe UI", 10))
-		style.configure("TButton", background=bgPanel, foreground=fgText, padding=(10, 6), font=("Segoe UI", 10))
+		style.configure("TButton", background=bgPanel, foreground=fgText, padding=(10, 6), font=("Segoe UI", 10), focuscolor="")
 		style.configure("TLabelframe", background=bgMain, foreground=fgText)
 		style.configure("TLabelframe.Label", background=bgMain, foreground=fgText, font=("Segoe UI", 10, "bold"))
 		style.configure("TEntry", fieldbackground=bgEntry, foreground=fgText, padding=6, font=("Consolas", 11))
@@ -311,7 +30,8 @@ class GUI:
 		style.map(
 			"TButton",
 			background=[("active", "#2d2d2d"), ("pressed", "#1f1f1f")],
-			foreground=[("active", "#d4d4d4"), ("pressed", "#d4d4d4")]
+			foreground=[("active", "#d4d4d4"), ("pressed", "#d4d4d4")], 
+			focuscolor=[("focus", "")]
 		)
 		style.map(
 			"TNotebook.Tab",
@@ -319,7 +39,7 @@ class GUI:
 			foreground=[("selected", "white"), ("active", fgText)]
 		)
 		root.configure(bg=bgMain)
-		self.centerWindow(root, 1000, 680)
+		self.centerWindow(root, 1200, 680)
 		self.interpreter = Interpreter()
 		self.history = []
 		self.histIndex = 0
@@ -333,7 +53,7 @@ class GUI:
 		leftFrame = ttk.Frame(contentFrame, padding=(0, 0, 10, 0))
 		leftFrame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-		rightFrame = ttk.Frame(contentFrame, width=360, padding=8)
+		rightFrame = ttk.Frame(contentFrame, width=500, padding=8)
 		rightFrame.pack(side=tk.RIGHT, fill=tk.Y)
 		rightFrame.pack_propagate(False)
 
@@ -431,7 +151,7 @@ class GUI:
 		sw = root.winfo_screenwidth()
 		sh = root.winfo_screenheight()
 		x = (sw // 2) - (w // 2)
-		y = (sh // 2) - (h // 2)
+		y = (sh // 2) - (h // 2) - 30
 		root.geometry(f"{w}x{h}+{x}+{y}")
 		
 	def printOut(self, text, tag=None):
@@ -623,8 +343,3 @@ class GUI:
 			self.entry.delete(0, tk.END)
 			if self.histIndex < len(self.history):
 				self.entry.insert(0, self.history[self.histIndex])
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    GUI(root)
-    root.mainloop()
