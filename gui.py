@@ -39,6 +39,7 @@ class GUI:
 			foreground=[("selected", "white"), ("active", fgText)]
 		)
 		root.configure(bg=bgMain)
+		self.root = root
 		self.centerWindow(root, 1200, 680)
 		self.interpreter = Interpreter()
 		self.history = []
@@ -83,7 +84,23 @@ class GUI:
 		self.entry.bind("<Up>", self.historyUp)
 		self.entry.bind("<Down>", self.historyDown)
 
+		self.stepButton = ttk.Button(inputFrame, text="Iniciar análisis", command=self.toggleStepVisualization)
+		self.stepButton.pack(side=tk.LEFT, padx=(0, 6))
+		self.stepDelay = tk.DoubleVar(value=1.0)
+		self.speedScale = ttk.Scale(
+			inputFrame,
+			from_=0.5,
+			to=5.0,
+			variable=self.stepDelay,
+			command=self.updateStepDelay,
+			length=100
+		)
+		self.speedScale.pack(side=tk.LEFT, padx=(0, 4))
+		self.speedLabel = ttk.Label(inputFrame, text="1.0 s")
+		self.speedLabel.pack(side=tk.LEFT, padx=(0, 6))
 		ttk.Button(inputFrame, text="Ejecutar", command=self.execute).pack(side=tk.LEFT)
+		self.stepStatus = ttk.Label(leftFrame, text="Análisis paso a paso: inactivo")
+		self.stepStatus.pack(fill=tk.X, pady=(4, 0))
 
 		varsFrame = ttk.LabelFrame(leftFrame, text="Variables", padding=8)
 		varsFrame.pack(fill=tk.X, pady=8)
@@ -144,6 +161,10 @@ class GUI:
 		self.graph_offsets = {}
 		self.graph_cache = {}
 		self.zoom_levels = {}
+		self.step_expression = ""
+		self.step_position = 0
+		self.step_running = False
+		self.step_job = None
 		self.updateVariablesView()
 	
 	def centerWindow(self, root, w, h):
@@ -178,6 +199,7 @@ class GUI:
 		self.graph_offsets.pop(getattr(self, 'automatonCanvas', None), None)
 		self.zoom_levels.pop(getattr(self, 'astCanvas', None), None)
 		self.zoom_levels.pop(getattr(self, 'automatonCanvas', None), None)
+		self.resetStepVisualization()
 		
 	def updateVariablesView(self):
 		self.varsText.configure(state='normal')
@@ -199,6 +221,7 @@ class GUI:
 		expr = self.entry.get().strip()
 		if not expr:
 			return
+		self.resetStepVisualization()
 		self.history.append(expr)
 		self.histIndex = len(self.history)
 		self.printOut(f">>> {expr}")
@@ -215,6 +238,106 @@ class GUI:
 		except Exception as e:
 			self.printOut(f"Error: {e}", "error")
 		self.entry.delete(0, tk.END)
+
+	def resetStepVisualization(self):
+		if self.step_job is not None:
+			self.root.after_cancel(self.step_job)
+			self.step_job = None
+		self.step_running = False
+		self.step_expression = ""
+		self.step_position = 0
+		self.stepStatus.configure(text="Análisis paso a paso: inactivo")
+		self.stepButton.configure(text="Iniciar análisis")
+
+	def updateStepDelay(self, value):
+		self.speedLabel.configure(text=f"{float(value):.1f} s")
+
+	def toggleStepVisualization(self):
+		if self.step_running:
+			self.step_running = False
+			if self.step_job is not None:
+				self.root.after_cancel(self.step_job)
+				self.step_job = None
+			self.stepButton.configure(text="Continuar análisis")
+			self.stepStatus.configure(text=self.stepStatus.cget("text") + " | pausado")
+			return
+
+		expr = self.entry.get()
+		if not expr:
+			self.stepStatus.configure(text="Escribe una expresión para iniciar el análisis")
+			return
+		if expr != self.step_expression or self.step_position >= len(expr):
+			self.step_expression = expr
+			self.step_position = 0
+			self.graph_offsets[self.astCanvas] = (0, 0)
+			self.graph_offsets[self.automatonCanvas] = (0, 0)
+			self.graph_cache.pop(self.astCanvas, None)
+			self.astCanvas.delete("all")
+		self.step_running = True
+		self.stepButton.configure(text="Pausar análisis")
+		self.stepVisualization()
+
+	def stepVisualization(self):
+		expr = self.entry.get()
+		if not expr:
+			self.resetStepVisualization()
+			self.stepStatus.configure(text="Escribe una expresión para iniciar el análisis")
+			return
+
+		self.step_job = None
+		if expr != self.step_expression:
+			self.step_expression = expr
+			self.step_position = 0
+			self.graph_cache.pop(self.astCanvas, None)
+			self.astCanvas.delete("all")
+
+		self.step_position += 1
+		prefix = expr[:self.step_position]
+		self.entry.focus_set()
+		self.entry.icursor(self.step_position)
+		self.entry.selection_clear()
+
+		try:
+			tokens = Lexer(prefix).tokenize()
+		except (SyntaxError, ValueError) as error:
+			tokens = []
+			self.stepStatus.configure(
+				text=f"Carácter {self.step_position}/{len(expr)}: {error}"
+			)
+			self.astCanvas.delete("all")
+			self.graph_cache.pop(self.astCanvas, None)
+			self.graph_cache[self.automatonCanvas] = build_automaton_graph(tokens)
+			self.drawGraph(self.automatonCanvas, self.graph_cache[self.automatonCanvas])
+			if self.step_position >= len(expr):
+				self.step_running = False
+				self.stepButton.configure(text="Reiniciar análisis")
+			else:
+				self.scheduleNextStep()
+			return
+
+		ast = None
+		status = f"Carácter {self.step_position}/{len(expr)}: '{expr[self.step_position - 1]}'"
+		try:
+			ast = Parser(tokens).parse()
+			status += " | árbol sintáctico actualizado"
+		except SyntaxError:
+			status += " | esperando más caracteres"
+
+		self.graph_cache[self.automatonCanvas] = build_automaton_graph(tokens)
+		self.drawGraph(self.automatonCanvas, self.graph_cache[self.automatonCanvas])
+		if ast is not None:
+			self.graph_cache[self.astCanvas] = build_ast_graph(ast)
+			self.drawGraph(self.astCanvas, self.graph_cache[self.astCanvas])
+		self.stepStatus.configure(text=status)
+		if self.step_position >= len(expr):
+			self.step_running = False
+			self.stepButton.configure(text="Reiniciar análisis")
+		else:
+			self.scheduleNextStep()
+
+	def scheduleNextStep(self):
+		if self.step_running:
+			self.step_job = self.root.after(int(self.stepDelay.get() * 1000), self.stepVisualization)
 
 	def startDrag(self, event):
 		self.drag_data["canvas"] = event.widget
