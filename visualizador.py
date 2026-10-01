@@ -40,13 +40,13 @@ def format_ast_tree(tree: Dict[str, Any], prefix: str = "") -> str:
     return "\n".join(lines)
 
 
-def build_ast_graph(node: Any) -> Dict[str, Any]:
+def build_ast_graph(node: Any, highlight_last: bool = False) -> Dict[str, Any]:
     """Convierte el AST en un árbol top-down de nodos y aristas."""
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
     counter = 0
 
-    def visit(current: Any) -> str:
+    def visit(current: Any, path: str = "0") -> str:
         nonlocal counter
         node_id = f"n{counter}"
         counter += 1
@@ -66,29 +66,70 @@ def build_ast_graph(node: Any) -> Dict[str, Any]:
         else:
             label = node_type
 
-        nodes.append({"id": node_id, "label": label, "type": node_type})
+        nodes.append({"id": node_id, "label": label, "type": node_type, "path": path})
 
         if node_type == "UnaryOp":
-            child_id = visit(current.expr)
+            child_id = visit(current.expr, f"{path}.0")
             edges.append({"from": node_id, "to": child_id, "label": "expr"})
         elif node_type == "BinOp":
-            left_id = visit(current.left)
-            right_id = visit(current.right)
+            left_id = visit(current.left, f"{path}.0")
+            right_id = visit(current.right, f"{path}.1")
             edges.append({"from": node_id, "to": left_id, "label": "left"})
             edges.append({"from": node_id, "to": right_id, "label": "right"})
         elif node_type == "Assign":
-            value_id = visit(current.value)
+            value_id = visit(current.value, f"{path}.0")
             edges.append({"from": node_id, "to": value_id, "label": "value"})
         elif node_type == "FunctionCall":
-            for arg in current.args:
-                arg_id = visit(arg)
+            for index, arg in enumerate(current.args):
+                arg_id = visit(arg, f"{path}.{index}")
                 edges.append({"from": node_id, "to": arg_id, "label": "arg"})
 
         return node_id
 
     if node is not None:
         visit(node)
+    if highlight_last and nodes:
+        nodes[-1]["active"] = True
     return {"nodes": nodes, "edges": edges}
+
+
+def mark_graph_changes(graph: Dict[str, Any], previous_graph: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Marca los nodos nuevos y los que cambiaron respecto al paso anterior."""
+    nodes = graph.get("nodes", [])
+    previous_nodes = (previous_graph or {}).get("nodes", [])
+    previous_by_path = {
+        node.get("path", node.get("id")): node for node in previous_nodes
+    }
+    for node in nodes:
+        node.pop("active", None)
+        previous = previous_by_path.get(node.get("path", node.get("id")))
+        if previous is None:
+            node["change"] = "new"
+        elif (node.get("type"), node.get("label")) != (previous.get("type"), previous.get("label")):
+            node["change"] = "modified"
+    return graph
+
+
+def mark_graph_completed(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """Marca la raíz como operación finalizada en el último paso."""
+    nodes = graph.get("nodes", [])
+    if nodes:
+        nodes[0]["change"] = "completed"
+    return graph
+
+
+def progressive_graph(graph: Dict[str, Any], visible_count: int) -> Dict[str, Any]:
+    """Devuelve el grafo con solo los primeros nodos del recorrido visibles."""
+    visible_nodes = graph.get("nodes", [])[:visible_count]
+    visible_ids = {node["id"] for node in visible_nodes}
+    return {
+        "nodes": [dict(node) for node in visible_nodes],
+        "edges": [
+            dict(edge)
+            for edge in graph.get("edges", [])
+            if edge["from"] in visible_ids and edge["to"] in visible_ids
+        ],
+    }
 
 
 def build_automaton_steps(tokens: List[Any]) -> List[Dict[str, Any]]:
@@ -135,7 +176,7 @@ def format_automaton_steps(steps: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_automaton_graph(tokens: List[Any]) -> Dict[str, Any]:
+def build_automaton_graph(tokens: List[Any], highlight_last: bool = False) -> Dict[str, Any]:
     """Construye un árbol top-down para representar el recorrido del autómata léxico."""
     nodes = [{"id": "start", "label": "START", "type": "start"}]
     edges: List[Dict[str, Any]] = []
@@ -152,9 +193,12 @@ def build_automaton_graph(tokens: List[Any]) -> Dict[str, Any]:
             state = "OTRO"
 
         node_id = f"t{index}"
-        nodes.append({"id": node_id, "label": f"{state}: {token.type}", "type": token.type})
+        nodes.append({"id": node_id, "label": f"{state}: {token.type}", "type": token.type, "path": node_id})
         edges.append({"from": previous_id, "to": node_id, "label": token.value})
         previous_id = node_id
+
+    if highlight_last and tokens:
+        nodes[-1]["active"] = True
 
     if not tokens:
         nodes.append({"id": "end", "label": "END", "type": "end"})
