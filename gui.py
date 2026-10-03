@@ -106,28 +106,28 @@ class GUI:
 		visualFrame = ttk.LabelFrame(rightFrame, text="Visualización de análisis", padding=8)
 		visualFrame.pack(fill=tk.BOTH, expand=True)
 
-		visualTabs = ttk.Notebook(visualFrame)
-		visualTabs.pack(fill=tk.BOTH, expand=True)
+		self.visualTabs = ttk.Notebook(visualFrame)
+		self.visualTabs.pack(fill=tk.BOTH, expand=True)
 
-		legendFrame = ttk.Frame(visualFrame)
-		legendFrame.pack(fill=tk.X, pady=(6, 0))
-		ttk.Label(legendFrame, text="Nuevo", background="#246b45", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(0, 4))
-		ttk.Label(legendFrame, text="Modificado", background="#8a5528", foreground="white", padding=(6, 2)).pack(side=tk.LEFT)
-		ttk.Label(legendFrame, text="Finalizado", background="#216e78", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(4, 0))
+		self.legendFrame = ttk.Frame(visualFrame)
+		self.legendFrame.pack(fill=tk.X, pady=(6, 0))
+		ttk.Label(self.legendFrame, text="Nuevo", background="#246b45", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(0, 4))
+		ttk.Label(self.legendFrame, text="Modificado", background="#8a5528", foreground="white", padding=(6, 2)).pack(side=tk.LEFT)
+		ttk.Label(self.legendFrame, text="Finalizado", background="#216e78", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(4, 0))
 
-		simulationFrame = ttk.Frame(visualFrame)
-		simulationFrame.pack(fill=tk.X, pady=(6, 0))
-		self.stepButton = ttk.Button(simulationFrame, text="Iniciar simulación", command=self.toggleStepVisualization)
+		self.simulationFrame = ttk.Frame(visualFrame)
+		self.simulationFrame.pack(fill=tk.X, pady=(6, 0))
+		self.stepButton = ttk.Button(self.simulationFrame, text="Iniciar simulación", command=self.toggleStepVisualization)
 		self.stepButton.pack(side=tk.LEFT, padx=(0, 6))
 		self.stepDelay = tk.DoubleVar(value=1.0)
-		self.speedScale = ttk.Scale(simulationFrame, from_=0.5, to=5.0, variable=self.stepDelay, command=self.updateStepDelay, length=100)
+		self.speedScale = ttk.Scale(self.simulationFrame, from_=0.5, to=5.0, variable=self.stepDelay, command=self.updateStepDelay, length=100)
 		self.speedScale.pack(side=tk.LEFT, padx=(0, 4))
-		self.speedLabel = ttk.Label(simulationFrame, text="1.0 s")
+		self.speedLabel = ttk.Label(self.simulationFrame, text="1.0 s")
 		self.speedLabel.pack(side=tk.LEFT, padx=(0, 6))
-		self.stepStatus = ttk.Label(simulationFrame, text="Simulación: inactiva")
+		self.stepStatus = ttk.Label(self.simulationFrame, text="Simulación: inactiva")
 		self.stepStatus.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-		self.astFrame = ttk.Frame(visualTabs)
+		self.astFrame = ttk.Frame(self.visualTabs)
 		self.astCanvas = tk.Canvas(self.astFrame, bg="#111418", highlightthickness=0)
 		self.astCanvas.pack(fill=tk.BOTH, expand=True)
 		self.astCanvas.bind("<ButtonPress-1>", self.startDrag)
@@ -135,9 +135,9 @@ class GUI:
 		self.astCanvas.bind("<MouseWheel>", self.onWheel)
 		self.astCanvas.bind("<Button-4>", self.onWheel)
 		self.astCanvas.bind("<Button-5>", self.onWheel)
-		visualTabs.add(self.astFrame, text="Árbol sintáctico")
+		self.visualTabs.add(self.astFrame, text="Árbol sintáctico")
 
-		self.automatonFrame = ttk.Frame(visualTabs)
+		self.automatonFrame = ttk.Frame(self.visualTabs)
 		self.automatonCanvas = tk.Canvas(self.automatonFrame, bg="#111418", highlightthickness=0)
 		self.automatonCanvas.pack(fill=tk.BOTH, expand=True)
 		self.automatonCanvas.bind("<ButtonPress-1>", self.startDrag)
@@ -145,8 +145,11 @@ class GUI:
 		self.automatonCanvas.bind("<MouseWheel>", self.onWheel)
 		self.automatonCanvas.bind("<Button-4>", self.onWheel)
 		self.automatonCanvas.bind("<Button-5>", self.onWheel)
-		visualTabs.add(self.automatonFrame, text="Autómata léxico")
-
+		self.visualTabs.add(self.automatonFrame, text="Autómata léxico")
+		
+		self.visualTabs.bind("<<NotebookTabChanged>>", self.onTabChanged)
+		self.onTabChanged()
+		
 		btnFrame = ttk.Frame(leftFrame)
 		btnFrame.pack(fill=tk.X, pady=(8, 0))
 
@@ -307,6 +310,23 @@ class GUI:
 		self.drag_data["canvas"] = event.widget
 		self.drag_data["x"] = event.x
 		self.drag_data["y"] = event.y
+
+	def onTabChanged(self, event=None):
+		try:
+			selected = self.visualTabs.select()
+			tab_text = self.visualTabs.tab(selected, "text")
+		except tk.TclError:
+			return
+		if tab_text == "Árbol sintáctico":
+			if not self.legendFrame.winfo_ismapped():
+				self.legendFrame.pack(fill=tk.X, pady=(6, 0))
+			if not self.simulationFrame.winfo_ismapped():
+				self.simulationFrame.pack(fill=tk.X, pady=(6, 0))
+		else:
+			if self.legendFrame.winfo_ismapped():
+				self.legendFrame.pack_forget()
+			if self.simulationFrame.winfo_ismapped():
+				self.simulationFrame.pack_forget()
 
 	def onDrag(self, event):
 		canvas = event.widget
