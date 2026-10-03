@@ -5,7 +5,7 @@ from analizador_lexico import Lexer
 from analizador_sintactico import Parser
 from interprete import Interpreter
 from analizador_semantico import SemanticAnalyzer, SemanticError
-from visualizador import build_ast_graph, build_automaton_graph
+from visualizador import build_ast_graph, build_automaton_graph, mark_graph_changes, mark_graph_completed, progressive_graph
 
 class GUI:
 	def __init__(self, root):
@@ -39,6 +39,7 @@ class GUI:
 			foreground=[("selected", "white"), ("active", fgText)]
 		)
 		root.configure(bg=bgMain)
+		self.root = root
 		self.centerWindow(root, 1200, 680)
 		self.interpreter = Interpreter()
 		self.history = []
@@ -108,6 +109,24 @@ class GUI:
 		visualTabs = ttk.Notebook(visualFrame)
 		visualTabs.pack(fill=tk.BOTH, expand=True)
 
+		legendFrame = ttk.Frame(visualFrame)
+		legendFrame.pack(fill=tk.X, pady=(6, 0))
+		ttk.Label(legendFrame, text="Nuevo", background="#246b45", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(0, 4))
+		ttk.Label(legendFrame, text="Modificado", background="#8a5528", foreground="white", padding=(6, 2)).pack(side=tk.LEFT)
+		ttk.Label(legendFrame, text="Finalizado", background="#216e78", foreground="white", padding=(6, 2)).pack(side=tk.LEFT, padx=(4, 0))
+
+		simulationFrame = ttk.Frame(visualFrame)
+		simulationFrame.pack(fill=tk.X, pady=(6, 0))
+		self.stepButton = ttk.Button(simulationFrame, text="Iniciar simulación", command=self.toggleStepVisualization)
+		self.stepButton.pack(side=tk.LEFT, padx=(0, 6))
+		self.stepDelay = tk.DoubleVar(value=1.0)
+		self.speedScale = ttk.Scale(simulationFrame, from_=0.5, to=5.0, variable=self.stepDelay, command=self.updateStepDelay, length=100)
+		self.speedScale.pack(side=tk.LEFT, padx=(0, 4))
+		self.speedLabel = ttk.Label(simulationFrame, text="1.0 s")
+		self.speedLabel.pack(side=tk.LEFT, padx=(0, 6))
+		self.stepStatus = ttk.Label(simulationFrame, text="Simulación: inactiva")
+		self.stepStatus.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
 		self.astFrame = ttk.Frame(visualTabs)
 		self.astCanvas = tk.Canvas(self.astFrame, bg="#111418", highlightthickness=0)
 		self.astCanvas.pack(fill=tk.BOTH, expand=True)
@@ -144,6 +163,10 @@ class GUI:
 		self.graph_offsets = {}
 		self.graph_cache = {}
 		self.zoom_levels = {}
+		self.step_running = False
+		self.step_job = None
+		self.simulation_graph = None
+		self.simulation_index = 0
 		self.updateVariablesView()
 	
 	def centerWindow(self, root, w, h):
@@ -178,6 +201,7 @@ class GUI:
 		self.graph_offsets.pop(getattr(self, 'automatonCanvas', None), None)
 		self.zoom_levels.pop(getattr(self, 'astCanvas', None), None)
 		self.zoom_levels.pop(getattr(self, 'automatonCanvas', None), None)
+		self.resetStepVisualization()
 		
 	def updateVariablesView(self):
 		self.varsText.configure(state='normal')
@@ -199,6 +223,7 @@ class GUI:
 		expr = self.entry.get().strip()
 		if not expr:
 			return
+		self.resetStepVisualization()
 		self.history.append(expr)
 		self.histIndex = len(self.history)
 		self.printOut(f">>> {expr}")
@@ -215,6 +240,68 @@ class GUI:
 		except Exception as e:
 			self.printOut(f"Error: {e}", "error")
 		self.entry.delete(0, tk.END)
+
+	def resetStepVisualization(self):
+		if self.step_job is not None:
+			self.root.after_cancel(self.step_job)
+			self.step_job = None
+		self.step_running = False
+		self.simulation_graph = None
+		self.simulation_index = 0
+		self.stepStatus.configure(text="Simulación: inactiva")
+		self.stepButton.configure(text="Iniciar simulación")
+
+	def updateStepDelay(self, value):
+		self.speedLabel.configure(text=f"{float(value):.1f} s")
+
+	def toggleStepVisualization(self):
+		if self.step_running:
+			self.step_running = False
+			if self.step_job is not None:
+				self.root.after_cancel(self.step_job)
+				self.step_job = None
+			self.stepButton.configure(text="Continuar análisis")
+			self.stepStatus.configure(text=self.stepStatus.cget("text") + " | pausado")
+			return
+
+		if self.simulation_graph is None:
+			self.stepStatus.configure(text="Ejecuta una expresión antes de iniciar la simulación")
+			return
+		if self.simulation_index >= len(self.simulation_graph.get("nodes", [])):
+			self.simulation_index = 0
+			self.graph_offsets[self.astCanvas] = (0, 0)
+			self.astCanvas.delete("all")
+		self.step_running = True
+		self.stepButton.configure(text="Pausar simulación")
+		self.stepVisualization()
+
+	def stepVisualization(self):
+		if self.simulation_graph is None:
+			self.resetStepVisualization()
+			self.stepStatus.configure(text="Ejecuta una expresión antes de iniciar la simulación")
+			return
+
+		self.step_job = None
+		nodes = self.simulation_graph.get("nodes", [])
+		self.simulation_index += 1
+		visible_graph = progressive_graph(self.simulation_graph, self.simulation_index)
+		visible_graph["nodes"][-1]["change"] = "new"
+		visible_graph["nodes"][-1]["active"] = True
+		if self.simulation_index >= len(nodes):
+			visible_graph = mark_graph_completed(visible_graph)
+		self.graph_cache[self.astCanvas] = visible_graph
+		self.drawGraph(self.astCanvas, visible_graph, animate=True)
+		self.stepStatus.configure(text=f"Nodo {self.simulation_index}/{len(nodes)}: {nodes[self.simulation_index - 1]['label']}")
+		if self.simulation_index >= len(nodes):
+			self.step_running = False
+			self.stepButton.configure(text="Reiniciar simulación")
+			self.stepStatus.configure(text=self.stepStatus.cget("text") + " | árbol finalizado")
+		else:
+			self.scheduleNextStep()
+
+	def scheduleNextStep(self):
+		if self.step_running:
+			self.step_job = self.root.after(int(self.stepDelay.get() * 1000), self.stepVisualization)
 
 	def startDrag(self, event):
 		self.drag_data["canvas"] = event.widget
@@ -250,7 +337,7 @@ class GUI:
 		if canvas in self.graph_cache:
 			self.drawGraph(canvas, self.graph_cache[canvas])
 
-	def drawGraph(self, canvas, graph_data):
+	def drawGraph(self, canvas, graph_data, animate=False):
 		canvas.delete("all")
 		nodes = graph_data.get("nodes", [])
 		edges = graph_data.get("edges", [])
@@ -283,26 +370,27 @@ class GUI:
 
 		positions = {}
 		max_depth = max(depths.values()) if depths else 0
+		max_width = max((len(items) for items in by_depth.values()), default=1)
 		zoom = self.zoom_levels.get(canvas, 1.0)
 		offset_x, offset_y = self.graph_offsets.get(canvas, (0, 0))
 		for depth in sorted(by_depth):
 			items = by_depth[depth]
 			for index, node in enumerate(items):
-				x = 80 + depth * 180 * zoom + offset_x
-				y = 80 + index * 110 * zoom + offset_y
+				x = 80 + index * 180 * zoom + offset_x
+				y = 80 + depth * 110 * zoom + offset_y
 				positions[node["id"]] = (x, y)
 
-		canvas_width = max(320, int(140 + (max_depth + 1) * 180 * zoom))
-		canvas_height = max(280, int(120 + len(nodes) * 60 * zoom))
-		canvas.config(width=canvas_width, height=canvas_height)
+		canvas_width = max(320, int(140 + max_width * 180 * zoom))
+		canvas_height = max(280, int(120 + (max_depth + 1) * 110 * zoom))
+		canvas.config(scrollregion=(0, 0, canvas_width, canvas_height))
 
 		for edge in edges:
 			from_pos = positions[edge["from"]]
 			to_pos = positions[edge["to"]]
 			line_width = max(1, int(2 * zoom))
 			canvas.create_line(
-				from_pos[0] + 40 * zoom, from_pos[1],
-				to_pos[0] - 40 * zoom, to_pos[1],
+				from_pos[0], from_pos[1] + 14 * zoom,
+				to_pos[0], to_pos[1] - 14 * zoom,
 				fill="#4fc3f7", width=line_width, arrow=tk.LAST, smooth=True
 			)
 			canvas.create_text(
@@ -320,12 +408,61 @@ class GUI:
 				label = label[:21] + "..."
 			node_w = int(56 * zoom)
 			node_h = int(24 * zoom)
-			canvas.create_rectangle(x - node_w // 2, y - node_h // 2, x + node_w // 2, y + node_h // 2, fill="#263b4a", outline="#4fc3f7", width=max(1, int(2 * zoom)))
-			canvas.create_text(x, y, text=label, fill="white", font=("Segoe UI", int(10 * zoom), "bold"))
+			change = node.get("change")
+			if change == "new":
+				fill = "#246b45"
+				outline = "#7ee2a8"
+			elif change == "modified":
+				fill = "#8a5528"
+				outline = "#ffb366"
+			elif change == "completed":
+				fill = "#216e78"
+				outline = "#80e5ed"
+			elif node.get("active"):
+				fill = "#9a6b24"
+				outline = "#ffd166"
+			else:
+				fill = "#263b4a"
+				outline = "#4fc3f7"
+			node_tag = f"node_{node['id']}"
+			box_tag = f"{node_tag}_box"
+			canvas.create_rectangle(
+				x - node_w // 2,
+				y - node_h // 2,
+				x + node_w // 2,
+				y + node_h // 2,
+				fill=fill,
+				outline=outline,
+				width=max(1, int(2 * zoom)),
+				tags=(box_tag, "node_box")
+			)
+			canvas.create_text(
+				x,
+				y,
+				text=label,
+				fill="white",
+				font=("Segoe UI", int(10 * zoom), "bold"),
+				tags=(node_tag, "node_label")
+			)
+			if animate and change in {"new", "modified", "completed"}:
+				self.animateActiveNode(canvas, box_tag)
+
+	def animateActiveNode(self, canvas, node_tag, frame=0):
+		if not canvas.winfo_exists():
+			return
+		frames = [("#6f5426", "#fff2aa", 3), ("#d9952b", "#ffe08a", 4), ("#ffd166", "#fff2aa", 3), ("#9a6b24", "#ffd166", 2)]
+		fill, outline, width = frames[min(frame, len(frames) - 1)]
+		canvas.itemconfigure(node_tag, fill=fill, outline=outline, width=width)
+		if frame + 1 < len(frames):
+			canvas.after(100, self.animateActiveNode, canvas, node_tag, frame + 1)
 
 	def updateVisualization(self, ast, tokens):
 		ast_graph = build_ast_graph(ast)
 		automaton_graph = build_automaton_graph(tokens)
+		self.simulation_graph = ast_graph
+		self.simulation_index = 0
+		self.stepStatus.configure(text="Simulación lista: pulsa Iniciar simulación")
+		self.stepButton.configure(text="Iniciar simulación")
 		self.graph_cache[self.astCanvas] = ast_graph
 		self.graph_cache[self.automatonCanvas] = automaton_graph
 		self.drawGraph(self.astCanvas, ast_graph)
